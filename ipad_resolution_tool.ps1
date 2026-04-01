@@ -1,9 +1,3 @@
-﻿# 管理者権限チェック＆自動昇格
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
-    exit
-}
-
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -117,97 +111,6 @@ function Get-RatioStr($w, $h) {
     return "$([int]($w / $g)):$([int]($h / $g))"
 }
 
-function Build-DTD($width, $height, $refreshRate) {
-    # EDID Detailed Timing Descriptor (18 bytes) を生成
-    # CVT-like blanking intervals
-    $hBlank = 160; $hFront = 48; $hSync = 32
-    $vBlank = 68;  $vFront = 3;  $vSync = 10
-    $hTotal = [double]$width + $hBlank
-    $vTotal = [double]$height + $vBlank
-    # ピクセルクロック (10kHz単位): hTotal * vTotal * refreshRate / 10000
-    $pixClk = [int][math]::Round($hTotal * $vTotal * [double]$refreshRate / 10000.0)
-
-    $dtd = [byte[]]::new(18)
-    $dtd[0] = $pixClk -band 0xFF
-    $dtd[1] = ($pixClk -shr 8) -band 0xFF
-    $dtd[2] = $width -band 0xFF
-    $dtd[3] = $hBlank -band 0xFF
-    $dtd[4] = (($width -shr 8) -band 0x0F) -shl 4 -bor (($hBlank -shr 8) -band 0x0F)
-    $dtd[5] = $height -band 0xFF
-    $dtd[6] = $vBlank -band 0xFF
-    $dtd[7] = (($height -shr 8) -band 0x0F) -shl 4 -bor (($vBlank -shr 8) -band 0x0F)
-    $dtd[8] = $hFront -band 0xFF
-    $dtd[9] = $hSync -band 0xFF
-    $dtd[10] = (($vFront -band 0x0F) -shl 4) -bor ($vSync -band 0x0F)
-    $dtd[11] = 0x00
-    $dtd[12] = 0x00; $dtd[13] = 0x00; $dtd[14] = 0x00
-    $dtd[15] = 0x00; $dtd[16] = 0x00
-    $dtd[17] = 0x18  # non-interlaced, digital separate sync
-    return $dtd
-}
-
-function Register-CustomResolution($width, $height) {
-    # UVCデバイス (HDMI TO USB) のEDIDにカスタム解像度をOverrideとして登録
-    $monitorPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\DISPLAY\HJW2130"
-    if (-not (Test-Path $monitorPath)) {
-        return @{ Success = $false; Message = "UVC device (HJW2130) not found in registry" }
-    }
-    # アクティブなインスタンスを探す
-    $instances = Get-ChildItem $monitorPath
-    $targetPath = $null
-    foreach ($inst in $instances) {
-        $paramPath = Join-Path $inst.PSPath "Device Parameters"
-        $edid = (Get-ItemProperty -Path $paramPath -Name EDID -EA SilentlyContinue).EDID
-        if ($edid -and $edid.Length -ge 128) {
-            $targetPath = $paramPath
-            break
-        }
-    }
-    if (-not $targetPath) {
-        return @{ Success = $false; Message = "No EDID found for UVC device" }
-    }
-
-    $edid = [byte[]](Get-ItemProperty -Path $targetPath -Name EDID).EDID
-    # バックアップ (EDID_BACKUP)
-    $backup = (Get-ItemProperty -Path $targetPath -Name EDID_BACKUP -EA SilentlyContinue).EDID_BACKUP
-    if (-not $backup) {
-        Set-ItemProperty -Path $targetPath -Name "EDID_BACKUP" -Value $edid -Type Binary
-    }
-
-    # DTD#3 (offset 90-107) にカスタム解像度を挿入
-    $dtd = Build-DTD $width $height 30  # UVCは30Hzが一般的
-    for ($i = 0; $i -lt 18; $i++) {
-        $edid[90 + $i] = $dtd[$i]
-    }
-
-    # チェックサム再計算 (byte 127)
-    $sum = 0
-    for ($i = 0; $i -lt 127; $i++) { $sum += $edid[$i] }
-    $edid[127] = [byte]((256 - ($sum % 256)) % 256)
-
-    # EDID_OVERRIDE として書き込み
-    Set-ItemProperty -Path $targetPath -Name "EDID_OVERRIDE" -Value $edid -Type Binary
-
-    return @{ Success = $true; Message = "EDID override written: ${width}x${height}. Reboot or re-plug UVC device to apply." }
-}
-
-function Remove-CustomResolution {
-    $monitorPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\DISPLAY\HJW2130"
-    if (-not (Test-Path $monitorPath)) {
-        return @{ Success = $false; Message = "UVC device not found" }
-    }
-    $instances = Get-ChildItem $monitorPath
-    foreach ($inst in $instances) {
-        $paramPath = Join-Path $inst.PSPath "Device Parameters"
-        $override = (Get-ItemProperty -Path $paramPath -Name EDID_OVERRIDE -EA SilentlyContinue).EDID_OVERRIDE
-        if ($override) {
-            Remove-ItemProperty -Path $paramPath -Name "EDID_OVERRIDE" -EA SilentlyContinue
-            return @{ Success = $true; Message = "EDID override removed. Reboot or re-plug to restore original." }
-        }
-    }
-    return @{ Success = $false; Message = "No EDID override found" }
-}
-
 function Set-DisplayResolution($deviceName, $width, $height, $freq) {
     $dm = New-Object DisplayAPI+DEVMODE
     $dm.dmSize = [uint16][System.Runtime.InteropServices.Marshal]::SizeOf([type][DisplayAPI+DEVMODE])
@@ -229,7 +132,7 @@ function Set-DisplayResolution($deviceName, $width, $height, $freq) {
 # --- GUI ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "iPad UVC Resolution Tool"
-$form.Size = New-Object System.Drawing.Size(800, 800)
+$form.Size = New-Object System.Drawing.Size(800, 720)
 $form.StartPosition = "CenterScreen"
 $form.Font = New-Object System.Drawing.Font("Meiryo UI", 9)
 
@@ -274,20 +177,18 @@ $y += 30
 $grpPreset = New-Object System.Windows.Forms.GroupBox
 $grpPreset.Text = "iPad Presets (click to apply)"
 $grpPreset.Location = New-Object System.Drawing.Point(15, $y)
-$grpPreset.Size = New-Object System.Drawing.Size(750, 180)
+$grpPreset.Size = New-Object System.Drawing.Size(750, 150)
 $form.Controls.Add($grpPreset)
 
 $presets = @(
-    @{ Name = "iPad Pro 13 (M4) Native"; W = 2752; H = 2064; Portrait = $false },
-    @{ Name = "iPad Pro 13 (M4) Half"; W = 1376; H = 1032; Portrait = $false },
-    @{ Name = "iPad Pro 12.9 / Air 13 Native"; W = 2732; H = 2048; Portrait = $false },
-    @{ Name = "iPad Pro 12.9 / Air 13 Half"; W = 1366; H = 1024; Portrait = $false },
-    @{ Name = "iPad Air 13 Portrait Native"; W = 2048; H = 2732; Portrait = $true },
-    @{ Name = "iPad Air 13 Portrait Half"; W = 1024; H = 1366; Portrait = $true },
-    @{ Name = "iPad 4:3 (2048x1536)"; W = 2048; H = 1536; Portrait = $false },
-    @{ Name = "iPad 4:3 Half (1024x768)"; W = 1024; H = 768; Portrait = $false },
-    @{ Name = "XGA 4:3 (1280x960)"; W = 1280; H = 960; Portrait = $false },
-    @{ Name = "SXGA 4:3 (1400x1050)"; W = 1400; H = 1050; Portrait = $false }
+    @{ Name = "iPad Pro 13 (M4) Native"; W = 2752; H = 2064 },
+    @{ Name = "iPad Pro 13 (M4) Half"; W = 1376; H = 1032 },
+    @{ Name = "iPad Pro 12.9 / Air 13 Native"; W = 2732; H = 2048 },
+    @{ Name = "iPad Pro 12.9 / Air 13 Half"; W = 1366; H = 1024 },
+    @{ Name = "iPad 4:3 (2048x1536)"; W = 2048; H = 1536 },
+    @{ Name = "iPad 4:3 Half (1024x768)"; W = 1024; H = 768 },
+    @{ Name = "XGA 4:3 (1280x960)"; W = 1280; H = 960 },
+    @{ Name = "SXGA 4:3 (1400x1050)"; W = 1400; H = 1050 }
 )
 
 $bx = 10; $by = 22
@@ -303,82 +204,25 @@ for ($pi = 0; $pi -lt $presets.Count; $pi++) {
         $pr = $this.Tag
         $idx = $cmbDisplay.SelectedIndex
         if ($idx -lt 0) { [System.Windows.Forms.MessageBox]::Show("Select a display first", "Warning"); return }
-
-        if ($pr.Portrait) {
-            # 縦型: EDID Override で登録が必要
-            $msg = $pr.Name + " " + $pr.W.ToString() + "x" + $pr.H.ToString() + "`n`nThis portrait resolution requires EDID override (registry modification).`nAfter registration, you need to re-plug the UVC device or reboot.`n`nRegister and apply?"
-            $confirm = [System.Windows.Forms.MessageBox]::Show($msg, "Portrait Resolution - EDID Override", "YesNo", "Question")
-            if ($confirm -ne "Yes") { return }
-            $regRes = Register-CustomResolution $pr.W $pr.H
-            if ($regRes.Success) {
-                $lblStatus.Text = "EDID: " + $regRes.Message
-                [System.Windows.Forms.MessageBox]::Show($regRes.Message + "`n`nPlease re-plug the UVC device, then click the preset button again to apply the resolution.", "EDID Override Registered", "OK", "Information")
-            } else {
-                $lblStatus.Text = "NG: " + $regRes.Message
-                [System.Windows.Forms.MessageBox]::Show($regRes.Message + "`n`nNote: Administrator privileges may be required.", "Error")
-            }
-            # EDID登録後、解像度適用も試みる
-            $devName = $script:displayList[$idx].Name
-            $res = Set-DisplayResolution $devName $pr.W $pr.H 0
-            if ($res.Success) {
-                $lblStatus.Text = "OK: " + $res.Message
-                [System.Windows.Forms.MessageBox]::Show($res.Message, "Success")
-                & $refreshAction
-            }
+        $msg = $pr.Name + " " + $pr.W.ToString() + "x" + $pr.H.ToString() + " - Apply?"
+        $confirm = [System.Windows.Forms.MessageBox]::Show($msg, "Confirm", "YesNo")
+        if ($confirm -ne "Yes") { return }
+        $devName = $script:displayList[$idx].Name
+        $res = Set-DisplayResolution $devName $pr.W $pr.H 0
+        if ($res.Success) {
+            $lblStatus.Text = "OK: " + $res.Message
+            [System.Windows.Forms.MessageBox]::Show($res.Message, "Success")
+            & $refreshAction
         } else {
-            # 横型: 通常の解像度変更
-            $msg = $pr.Name + " " + $pr.W.ToString() + "x" + $pr.H.ToString() + " - Apply?"
-            $confirm = [System.Windows.Forms.MessageBox]::Show($msg, "Confirm", "YesNo")
-            if ($confirm -ne "Yes") { return }
-            $devName = $script:displayList[$idx].Name
-            $res = Set-DisplayResolution $devName $pr.W $pr.H 0
-            if ($res.Success) {
-                $lblStatus.Text = "OK: " + $res.Message
-                [System.Windows.Forms.MessageBox]::Show($res.Message, "Success")
-                & $refreshAction
-            } else {
-                $lblStatus.Text = "NG: " + $res.Message
-                [System.Windows.Forms.MessageBox]::Show($res.Message, "Error")
-            }
+            $lblStatus.Text = "NG: " + $res.Message
+            [System.Windows.Forms.MessageBox]::Show($res.Message, "Error")
         }
     })
     $grpPreset.Controls.Add($btn)
     $bx += 370
     if ($bx -gt 400) { $bx = 10; $by += 30 }
 }
-$y += 190
-
-# EDID Override controls
-$grpEdid = New-Object System.Windows.Forms.GroupBox
-$grpEdid.Text = "EDID Override (Portrait Resolution Registration)"
-$grpEdid.Location = New-Object System.Drawing.Point(15, $y)
-$grpEdid.Size = New-Object System.Drawing.Size(750, 55)
-$form.Controls.Add($grpEdid)
-
-$btnRemoveEdid = New-Object System.Windows.Forms.Button
-$btnRemoveEdid.Text = "Remove EDID Override (Restore Original)"
-$btnRemoveEdid.Location = New-Object System.Drawing.Point(10, 20)
-$btnRemoveEdid.Size = New-Object System.Drawing.Size(300, 26)
-$btnRemoveEdid.Add_Click({
-    $confirm = [System.Windows.Forms.MessageBox]::Show("Remove EDID override and restore original settings?`nReboot or re-plug required after removal.", "Confirm", "YesNo")
-    if ($confirm -ne "Yes") { return }
-    $res = Remove-CustomResolution
-    if ($res.Success) {
-        $lblStatus.Text = "OK: " + $res.Message
-        [System.Windows.Forms.MessageBox]::Show($res.Message, "Success")
-    } else {
-        $lblStatus.Text = "NG: " + $res.Message
-        [System.Windows.Forms.MessageBox]::Show($res.Message, "Error")
-    }
-})
-$grpEdid.Controls.Add($btnRemoveEdid)
-
-$lblEdidNote = New-Object System.Windows.Forms.Label
-$lblEdidNote.Text = "* Portrait presets automatically register EDID. Admin rights required."
-$lblEdidNote.Location = New-Object System.Drawing.Point(320, 24)
-$lblEdidNote.AutoSize = $true
-$grpEdid.Controls.Add($lblEdidNote)
-$y += 65
+$y += 160
 
 # Custom resolution
 $grpCustom = New-Object System.Windows.Forms.GroupBox

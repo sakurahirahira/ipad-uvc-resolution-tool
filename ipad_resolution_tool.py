@@ -14,30 +14,22 @@ user32 = ctypes.windll.user32
 DM_PELSWIDTH = 0x80000
 DM_PELSHEIGHT = 0x100000
 DM_DISPLAYFREQUENCY = 0x400000
-DM_DISPLAYORIENTATION = 0x80
 CDS_UPDATEREGISTRY = 0x01
 CDS_TEST = 0x02
 DISP_CHANGE_SUCCESSFUL = 0
 DISP_CHANGE_RESTART = 1
 ENUM_CURRENT_SETTINGS = -1
-DMDO_DEFAULT = 0
-DMDO_90 = 1
-DMDO_180 = 2
-DMDO_270 = 3
 
-# iPad 解像度プリセット (width, height, rotation)
-# rotation: 0=横型, 1=縦型(90度回転)
+# iPad 解像度プリセット
 IPAD_PRESETS = {
-    "iPad Pro 13\" (M4) ネイティブ": (2752, 2064, 0),
-    "iPad Pro 13\" (M4) 半分": (1376, 1032, 0),
-    "iPad Pro 12.9\" / Air 13\" ネイティブ": (2732, 2048, 0),
-    "iPad Pro 12.9\" / Air 13\" 半分": (1366, 1024, 0),
-    "iPad Air 13\" 縦型 ネイティブ": (2732, 2048, 1),
-    "iPad Air 13\" 縦型 半分": (1366, 1024, 1),
-    "iPad 4:3 (2048x1536)": (2048, 1536, 0),
-    "iPad 4:3 半分 (1024x768)": (1024, 768, 0),
-    "XGA 4:3 (1280x960)": (1280, 960, 0),
-    "SXGA 4:3 (1400x1050)": (1400, 1050, 0),
+    "iPad Pro 13\" (M4) ネイティブ": (2752, 2064),
+    "iPad Pro 13\" (M4) 半分": (1376, 1032),
+    "iPad Pro 12.9\" / Air 13\" ネイティブ": (2732, 2048),
+    "iPad Pro 12.9\" / Air 13\" 半分": (1366, 1024),
+    "iPad 4:3 (2048x1536)": (2048, 1536),
+    "iPad 4:3 半分 (1024x768)": (1024, 768),
+    "XGA 4:3 (1280x960)": (1280, 960),
+    "SXGA 4:3 (1400x1050)": (1400, 1050),
 }
 
 
@@ -151,8 +143,8 @@ def find_best_match(modes, target_w, target_h):
     return best
 
 
-def set_resolution(device_name, width, height, freq=None, rotation=None):
-    """解像度を変更する（rotation: 0=デフォルト, 1=90度, 2=180度, 3=270度）"""
+def set_resolution(device_name, width, height, freq=None):
+    """解像度を変更する"""
     dm = DEVMODEW()
     dm.dmSize = ctypes.sizeof(dm)
     dm.dmPelsWidth = width
@@ -161,9 +153,6 @@ def set_resolution(device_name, width, height, freq=None, rotation=None):
     if freq:
         dm.dmDisplayFrequency = freq
         dm.dmFields |= DM_DISPLAYFREQUENCY
-    if rotation is not None:
-        dm.dmDisplayOrientation = rotation
-        dm.dmFields |= DM_DISPLAYORIENTATION
 
     # まずテスト
     result = user32.ChangeDisplaySettingsExW(
@@ -177,10 +166,7 @@ def set_resolution(device_name, width, height, freq=None, rotation=None):
         device_name, ctypes.byref(dm), None, CDS_UPDATEREGISTRY, None
     )
     if result == DISP_CHANGE_SUCCESSFUL:
-        msg = "解像度を変更しました！"
-        if rotation == DMDO_90:
-            msg += "（90度回転で縦型表示）"
-        return True, msg
+        return True, "解像度を変更しました！"
     elif result == DISP_CHANGE_RESTART:
         return True, "解像度を変更しました。完全に反映するには再起動が必要です。"
     else:
@@ -231,13 +217,9 @@ class App:
 
         row = 0
         col = 0
-        for name, (w, h, rot) in IPAD_PRESETS.items():
-            if rot:
-                label = f"{name}\n({h}x{w} = {w}x{h}+回転)"
-            else:
-                label = f"{name}\n({w}x{h})"
-            btn = ttk.Button(preset_frame, text=label,
-                             command=lambda w=w, h=h, r=rot, n=name: self.apply_preset(w, h, n, r))
+        for name, (w, h) in IPAD_PRESETS.items():
+            btn = ttk.Button(preset_frame, text=f"{name}\n({w}x{h})",
+                             command=lambda w=w, h=h, n=name: self.apply_preset(w, h, n))
             btn.grid(row=row, column=col, padx=5, pady=3, sticky=tk.EW)
             col += 1
             if col >= 2:
@@ -354,17 +336,15 @@ class App:
                                    tags=(tag,))
         self.modes_tree.tag_configure("match43", background="#d4edda")
 
-    def apply_preset(self, width, height, name, rotation=0):
+    def apply_preset(self, width, height, name):
         idx = self.display_combo.current()
         if idx < 0:
             messagebox.showwarning("警告", "ディスプレイを選択してください")
             return
         device_name = self.displays[idx]["name"]
 
-        rot_str = "（90度回転で縦型表示）" if rotation else ""
-        if messagebox.askyesno("確認", f"{name}\n{width}x{height}{rot_str} を適用しますか？"):
-            rot_val = DMDO_90 if rotation else None
-            success, msg = set_resolution(device_name, width, height, rotation=rot_val)
+        if messagebox.askyesno("確認", f"{name}\n{width}x{height} を適用しますか？"):
+            success, msg = set_resolution(device_name, width, height)
             if success:
                 self.status_var.set(f"✓ {msg}")
                 messagebox.showinfo("成功", msg)
@@ -378,8 +358,7 @@ class App:
                     suggest = f"\n\n最も近いサポート解像度:\n{best[0]}x{best[1]} @ {best[2]}Hz"
                     if messagebox.askyesno("エラー",
                                            f"{msg}{suggest}\n\nこの解像度を適用しますか？"):
-                        success2, msg2 = set_resolution(device_name, best[0], best[1], best[2],
-                                                        rotation=rot_val)
+                        success2, msg2 = set_resolution(device_name, best[0], best[1], best[2])
                         if success2:
                             self.status_var.set(f"✓ {msg2}")
                             self.on_display_selected(None)
