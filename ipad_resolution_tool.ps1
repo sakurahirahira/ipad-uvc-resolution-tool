@@ -336,11 +336,27 @@ $y += 65
 
 # Modes list
 $lblModes = New-Object System.Windows.Forms.Label
-$lblModes.Text = "Supported Resolutions (sorted by 4:3 proximity / double-click to apply)"
+$lblModes.Text = "Supported Resolutions (double-click to apply)"
 $lblModes.Location = New-Object System.Drawing.Point(15, $y)
 $lblModes.AutoSize = $true
 $form.Controls.Add($lblModes)
-$y += 20
+
+$lblSort = New-Object System.Windows.Forms.Label
+$lblSort.Text = "Sort:"
+$lblSort.Location = New-Object System.Drawing.Point(450, $y)
+$lblSort.AutoSize = $true
+$form.Controls.Add($lblSort)
+
+$cmbSort = New-Object System.Windows.Forms.ComboBox
+$cmbSort.Location = New-Object System.Drawing.Point(490, $y - 3)
+$cmbSort.Size = New-Object System.Drawing.Size(220, 25)
+$cmbSort.DropDownStyle = "DropDownList"
+$cmbSort.Items.Add("Resolution (High to Low)") | Out-Null
+$cmbSort.Items.Add("4:3 Proximity") | Out-Null
+$cmbSort.Items.Add("Frequency (High to Low)") | Out-Null
+$cmbSort.SelectedIndex = 0
+$form.Controls.Add($cmbSort)
+$y += 24
 
 $listView = New-Object System.Windows.Forms.ListView
 $listView.Location = New-Object System.Drawing.Point(15, $y)
@@ -400,9 +416,20 @@ $refreshModes = {
     }
     $modes = @(Get-SupportedModes $devName)
     $targetRatio = 4.0 / 3.0
-    $sorted = $modes | Sort-Object { [Math]::Abs($_.Width / $_.Height - $targetRatio) }, { -($_.Width * $_.Height) }
+    $sortMode = $cmbSort.SelectedIndex
+    switch ($sortMode) {
+        0 { $sorted = $modes | Sort-Object { $_.Width * $_.Height } -Descending }
+        1 { $sorted = $modes | Sort-Object { [Math]::Abs($_.Width / $_.Height - $targetRatio) }, { -($_.Width * $_.Height) } }
+        2 { $sorted = $modes | Sort-Object { $_.Freq } -Descending }
+        default { $sorted = $modes | Sort-Object { $_.Width * $_.Height } -Descending }
+    }
+    # 同一解像度で最高周波数のみ表示（ソートモード2以外）
+    $seen = @{}
     foreach ($m in $sorted) {
         $ratio = Get-RatioStr $m.Width $m.Height
+        $resKey = $m.Width.ToString() + "x" + $m.Height.ToString()
+        if ($sortMode -ne 2 -and $seen.ContainsKey($resKey)) { continue }
+        $seen[$resKey] = $true
         $resLabel = $m.Width.ToString() + " x " + $m.Height.ToString()
         $item = New-Object System.Windows.Forms.ListViewItem($resLabel)
         $item.SubItems.Add($m.Freq.ToString()) | Out-Null
@@ -419,6 +446,7 @@ $refreshModes = {
 
 $btnRefresh.Add_Click({ & $refreshAction })
 $cmbDisplay.Add_SelectedIndexChanged({ & $refreshModes })
+$cmbSort.Add_SelectedIndexChanged({ & $refreshModes })
 
 $btnApply.Add_Click({
     $idx = $cmbDisplay.SelectedIndex
