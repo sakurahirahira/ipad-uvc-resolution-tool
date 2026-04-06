@@ -131,6 +131,13 @@ function Set-DisplayResolution($deviceName, $width, $height, $freq) {
     Write-Host "[DEBUG] Got current settings: $gotCurrent"
     Write-Host "[DEBUG] Current: $($dm.dmPelsWidth)x$($dm.dmPelsHeight) @$($dm.dmDisplayFrequency)Hz $($dm.dmBitsPerPel)bpp"
     Write-Host "[DEBUG] Target: ${width}x${height} freq=$freq"
+    # デバッグ: サポートされている全解像度を表示
+    Write-Host "[DEBUG] Supported modes for $deviceName :"
+    $allModes = @(Get-SupportedModes $deviceName)
+    foreach ($m in $allModes) {
+        Write-Host "[DEBUG]   $($m.Width)x$($m.Height) @$($m.Freq)Hz $($m.Bpp)bpp"
+    }
+    Write-Host "[DEBUG] Total: $($allModes.Count) modes"
 
     # 解像度を上書き
     $dm.dmPelsWidth = $width
