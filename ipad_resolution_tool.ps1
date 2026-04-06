@@ -1,7 +1,9 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-Add-Type @"
+if (-not ([System.Management.Automation.PSTypeName]'DisplayAPI').Type) {
+    try {
+        Add-Type -Language CSharp -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 
@@ -55,7 +57,14 @@ public class DisplayAPI {
     public const uint CDS_TEST = 0x02;
     public const int ENUM_CURRENT_SETTINGS = -1;
 }
-"@
+"@ -ErrorAction Stop
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Failed to compile DisplayAPI type.`n`nError: $($_.Exception.Message)`n`nPossible causes:`n- PowerShell language mode is restricted`n- .NET compiler (csc.exe) not available`n`nTry running: powershell.exe -ExecutionPolicy Bypass -File `"$PSCommandPath`"",
+            "Initialization Error", "OK", "Error")
+        exit 1
+    }
+}
 
 function Get-Displays {
     $displays = @()
