@@ -348,7 +348,7 @@ $lblSort.AutoSize = $true
 $form.Controls.Add($lblSort)
 
 $cmbSort = New-Object System.Windows.Forms.ComboBox
-$cmbSort.Location = New-Object System.Drawing.Point(490, $y - 3)
+$cmbSort.Location = New-Object System.Drawing.Point(490, ([int]$y - 3))
 $cmbSort.Size = New-Object System.Drawing.Size(220, 25)
 $cmbSort.DropDownStyle = "DropDownList"
 $cmbSort.Items.Add("Resolution (High to Low)") | Out-Null
