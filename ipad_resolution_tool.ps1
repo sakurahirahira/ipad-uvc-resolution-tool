@@ -121,8 +121,18 @@ function Get-RatioStr($w, $h) {
 }
 
 function Set-DisplayResolution($deviceName, $width, $height, $freq) {
+    # 現在の設定をベースに取得（空のDEVMODEだとBADMODEになる）
     $dm = New-Object DisplayAPI+DEVMODE
     $dm.dmSize = [uint16][System.Runtime.InteropServices.Marshal]::SizeOf([type][DisplayAPI+DEVMODE])
+    $gotCurrent = [DisplayAPI]::EnumDisplaySettingsW($deviceName, [DisplayAPI]::ENUM_CURRENT_SETTINGS, [ref]$dm)
+
+    # デバッグ: 現在の設定を表示
+    Write-Host "[DEBUG] Device: $deviceName"
+    Write-Host "[DEBUG] Got current settings: $gotCurrent"
+    Write-Host "[DEBUG] Current: $($dm.dmPelsWidth)x$($dm.dmPelsHeight) @$($dm.dmDisplayFrequency)Hz $($dm.dmBitsPerPel)bpp"
+    Write-Host "[DEBUG] Target: ${width}x${height} freq=$freq"
+
+    # 解像度を上書き
     $dm.dmPelsWidth = $width
     $dm.dmPelsHeight = $height
     $dm.dmFields = [DisplayAPI]::DM_PELSWIDTH -bor [DisplayAPI]::DM_PELSHEIGHT
@@ -130,9 +140,48 @@ function Set-DisplayResolution($deviceName, $width, $height, $freq) {
         $dm.dmDisplayFrequency = $freq
         $dm.dmFields = $dm.dmFields -bor [DisplayAPI]::DM_DISPLAYFREQUENCY
     }
+
+    Write-Host "[DEBUG] dmFields: $($dm.dmFields) dmSize: $($dm.dmSize)"
+
+    # まずテスト
     $result = [DisplayAPI]::ChangeDisplaySettingsExW($deviceName, [ref]$dm, [IntPtr]::Zero, [DisplayAPI]::CDS_TEST, [IntPtr]::Zero)
-    if ($result -ne 0) { return @{ Success = $false; Message = "Not supported (code: $result)" } }
+    Write-Host "[DEBUG] CDS_TEST result: $result (0=OK, -1=RESTART, -2=BADMODE, -3=NOTUPDATED, -4=BADFLAGS, -5=BADPARAM)"
+    if ($result -ne 0) {
+        # テスト失敗時: サポートモード一覧から完全一致を探して再試行
+        Write-Host "[DEBUG] Test failed. Trying exact mode match..."
+        $modes = @(Get-SupportedModes $deviceName)
+        $exactMatch = $modes | Where-Object { $_.Width -eq $width -and $_.Height -eq $height } | Select-Object -First 1
+        if ($exactMatch) {
+            Write-Host "[DEBUG] Found exact match: $($exactMatch.Width)x$($exactMatch.Height) @$($exactMatch.Freq)Hz $($exactMatch.Bpp)bpp"
+            # サポートモードから完全なDEVMODEを取得
+            $dm2 = New-Object DisplayAPI+DEVMODE
+            $dm2.dmSize = [uint16][System.Runtime.InteropServices.Marshal]::SizeOf([type][DisplayAPI+DEVMODE])
+            $modeIdx = 0
+            while ([DisplayAPI]::EnumDisplaySettingsW($deviceName, $modeIdx, [ref]$dm2)) {
+                if ($dm2.dmPelsWidth -eq $width -and $dm2.dmPelsHeight -eq $height) {
+                    Write-Host "[DEBUG] Using mode index $modeIdx"
+                    $result = [DisplayAPI]::ChangeDisplaySettingsExW($deviceName, [ref]$dm2, [IntPtr]::Zero, [DisplayAPI]::CDS_TEST, [IntPtr]::Zero)
+                    Write-Host "[DEBUG] Retry CDS_TEST result: $result"
+                    if ($result -eq 0) {
+                        $result = [DisplayAPI]::ChangeDisplaySettingsExW($deviceName, [ref]$dm2, [IntPtr]::Zero, [DisplayAPI]::CDS_UPDATEREGISTRY, [IntPtr]::Zero)
+                        Write-Host "[DEBUG] Retry CDS_UPDATEREGISTRY result: $result"
+                        if ($result -eq 0) { return @{ Success = $true; Message = "Resolution changed! ($($dm2.dmPelsWidth)x$($dm2.dmPelsHeight) @$($dm2.dmFrequency)Hz)" } }
+                        if ($result -eq 1) { return @{ Success = $true; Message = "Resolution changed. Restart required." } }
+                        return @{ Success = $false; Message = "Change failed on retry (code: $result)" }
+                    }
+                    break
+                }
+                $modeIdx++
+            }
+        } else {
+            Write-Host "[DEBUG] No exact match found in supported modes"
+        }
+        return @{ Success = $false; Message = "Not supported (code: $result). Device=$deviceName Target=${width}x${height}" }
+    }
+
+    # テスト成功、実際に変更
     $result = [DisplayAPI]::ChangeDisplaySettingsExW($deviceName, [ref]$dm, [IntPtr]::Zero, [DisplayAPI]::CDS_UPDATEREGISTRY, [IntPtr]::Zero)
+    Write-Host "[DEBUG] CDS_UPDATEREGISTRY result: $result"
     if ($result -eq 0) { return @{ Success = $true; Message = "Resolution changed!" } }
     if ($result -eq 1) { return @{ Success = $true; Message = "Resolution changed. Restart required." } }
     return @{ Success = $false; Message = "Change failed (code: $result)" }
